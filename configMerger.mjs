@@ -1031,7 +1031,7 @@ async function generateDiffReport(oldContent, newContent, reportPath, logs) {
   if (changes.modified.length > 0) {
     report.push('MODIFIED LINES:');
     report.push('-'.repeat(100));
-    changes.modified.slice(0, 50).forEach(change => {
+    changes.modified.slice(0, 50).forEach(change => { // Limit to first 50 for readability
       report.push(`  [Line ${change.line}]`);
       report.push(`    OLD: ${change.old}`);
       report.push(`    NEW: ${change.new}`);
