@@ -1169,8 +1169,7 @@ app.post('/api/upgrade', upload.single('newArchive'), async (req, res) => {
       if (toolLower.includes('httpd') || toolLower.includes('apache')) {
         logStep(logs, 'Tool type: Apache HTTPD detected', 'INFO', sessionId);
         await comprehensivePreserveHTTPD_SECURE(existingPath, actualRoot, logs, sessionId);
-        await installModEvasive(newHttpd, logs, sessionId);
-
+        await installModEvasive(actualRoot, logs, sessionId);  // ✅ CORRECT - actualRoot is the new version
       }
     } else {
       logStep(logs, 'PHASE 3: Skipping preservation (disabled in config)', 'INFO', sessionId);
