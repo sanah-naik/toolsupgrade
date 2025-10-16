@@ -374,13 +374,13 @@ async function extractArchive(archivePath, originalName, extractTo, logs, sessio
 
 async function installModEvasive(apachePath, logs, sessionId) {
   logStep(logs, 'Installing mod_evasive for rate limiting...', 'INFO', sessionId);
-  
+
   const modulePath = path.join(apachePath, 'modules', 'mod_evasive.so');
   const httpdConfPath = path.join(apachePath, 'conf', 'httpd.conf');
-  
+
   // Check if already configured
   let httpdConf = await fs.readFile(httpdConfPath, 'utf8');
-  
+
   if (!httpdConf.includes('mod_evasive')) {
     httpdConf += '\n\n# Rate Limiting - VAPT Fix #7\n';
     httpdConf += 'LoadModule evasive_module modules/mod_evasive.so\n';
@@ -393,7 +393,7 @@ async function installModEvasive(apachePath, logs, sessionId) {
     httpdConf += '  DOSSiteInterval 1\n';
     httpdConf += '  DOSBlockingPeriod 10\n';
     httpdConf += '</IfModule>\n';
-    
+
     await fs.writeFile(httpdConfPath, httpdConf, 'utf8');
     logStep(logs, '✓ mod_evasive rate limiting configured', 'INFO', sessionId);
     logStep(logs, '⚠ NOTE: mod_evasive.so must be manually downloaded from Apache Lounge', 'WARNING', sessionId);
@@ -429,7 +429,7 @@ async function copyRecentLogs(sourceDir, targetDir, daysToKeep, logs, sessionId)
 // SECURE PRESERVATION FUNCTIONS WITH SMART CONFIG MERGING
 // ============================================================================
 
-async function comprehensivePreserveHTTPD_SECURE(oldHttpd, newHttpd, logs, sessionId = null) {
+async function comprehensivePreserveHTTPD_SECURE(oldHttpd, actualRoot, logs, sessionId = null) {
   logStep(logs, '═══════════════════════════════════════════════════════════', 'INFO', sessionId);
   logStep(logs, 'SECURE APACHE HTTPD CONFIGURATION PRESERVATION', 'INFO', sessionId);
   logStep(logs, 'Strategy: Smart merge instead of blind copy', 'INFO', sessionId);
@@ -485,7 +485,7 @@ async function comprehensivePreserveHTTPD_SECURE(oldHttpd, newHttpd, logs, sessi
 
   for (const item of preserveItems) {
     const sourcePath = path.join(oldHttpd, item.path);
-    const targetPath = path.join(newHttpd, item.path);
+    const targetPath = path.join(actualRoot, item.path);
 
     logCommand(logs, 'PRESERVE_ITEM', {
       type: item.type,
@@ -587,7 +587,7 @@ async function comprehensivePreserveHTTPD_SECURE(oldHttpd, newHttpd, logs, sessi
       const ext = path.extname(file).toLowerCase();
       if (certExtensions.includes(ext)) {
         const sourceFile = path.join(confDir, file);
-        const targetFile = path.join(newHttpd, 'conf', file);
+        const targetFile = path.join(actualRoot, 'conf', file);
 
         try {
           if (await fs.pathExists(targetFile)) {
@@ -905,7 +905,7 @@ async function detectAndStopServices(toolType, installPath, logs, sessionId) {
         } catch (e) { /* ignore */ }
       }
     }
-    
+
     logStep(logs, `✓ Apache cleanup completed (${3} attempts)`, 'INFO', sessionId);
   }
 
@@ -928,7 +928,7 @@ async function detectAndStopServices(toolType, installPath, logs, sessionId) {
         const lines = processes.split('\n');
 
         for (const line of lines) {
-          if (line.includes('catalina') || line.includes('tomcat') || 
+          if (line.includes('catalina') || line.includes('tomcat') ||
               line.includes('tomee') || line.includes('3DSpace')) {
             const match = line.match(/(\d+)\s*$/);
             if (match) {
@@ -955,7 +955,7 @@ async function detectAndStopServices(toolType, installPath, logs, sessionId) {
 
   // Wait for complete shutdown
   await new Promise(resolve => setTimeout(resolve, 5000));
-  
+
   logStep(logs, `✓ Service stop completed. Stopped: ${stoppedServices.length} service(s)`, 'INFO', sessionId);
   logStep(logs, '═══════════════════════════════════════════════════════════', 'INFO', sessionId);
 

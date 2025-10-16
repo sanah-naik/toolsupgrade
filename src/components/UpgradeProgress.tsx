@@ -70,8 +70,13 @@ const UpgradeProgress = ({ upgradeConfig, onBack, onComplete }) => {
   const [endTime, setEndTime] = useState(null);
   const [duration, setDuration] = useState(0);
   const [errorMessage, setErrorMessage] = useState('');
+  const [retrying, setRetrying] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
+  const [canRetry, setCanRetry] = useState(false);
   const logContainerRef = useRef(null);
   const eventSourceRef = useRef(null);
+
+  const maxRetries = 3;
 
   const tool = upgradeConfig.tool || { name: 'Tool', icon: '🔧' };
 
@@ -84,10 +89,31 @@ const UpgradeProgress = ({ upgradeConfig, onBack, onComplete }) => {
     };
   }, []);
 
-  const startUpgrade = async () => {
+    const startUpgrade = async (isRetry = false) => {
+      if (isRetry) {
+        setRetrying(true);
+        setRetryCount(prev => prev + 1);
+
+        // Reset phases to pending
+        setPhases(prev => prev.map(phase => ({
+          ...phase,
+          status: 'pending',
+          progress: 0,
+          logs: []
+        })));
+
+        setAllLogs([]);
+        setErrorMessage('');
+        setUpgradeStatus('running');
+      }
     const { sessionId, formData } = upgradeConfig;
 
-    const eventSource = new EventSource(`http://localhost:4000/api/upgrade-stream/${sessionId}`);
+    // Create new session ID for retry
+    const currentSessionId = isRetry ?
+      `${sessionId}_retry${retryCount}` :
+      sessionId;
+
+    const eventSource = new EventSource(`http://localhost:4000/api/upgrade-stream/${currentSessionId}`);
     eventSourceRef.current = eventSource;
 
     eventSource.onmessage = (event) => {
@@ -100,8 +126,10 @@ const UpgradeProgress = ({ upgradeConfig, onBack, onComplete }) => {
           setUpgradeStatus(data.success ? 'completed' : 'failed');
           setEndTime(new Date());
           setDuration(data.duration);
+          setRetrying(false);
           if (!data.success) {
             setErrorMessage(data.error || 'Upgrade failed');
+            setCanRetry(retryCount < maxRetries);
           }
         } else if (data.log) {
           setAllLogs(prev => [...prev, data.log]);
@@ -115,7 +143,17 @@ const UpgradeProgress = ({ upgradeConfig, onBack, onComplete }) => {
     eventSource.onerror = (err) => {
       console.error('SSE Error:', err);
       eventSource.close();
+      setRetrying(false);
+      setCanRetry(retryCount < maxRetries);
     };
+
+    try {
+      // Update formData with new session ID if retry
+      if (isRetry) {
+        const config = JSON.parse(formData.get('config'));
+        config.sessionId = currentSessionId;
+        formData.set('config', JSON.stringify(config));
+      }
 
     try {
       const response = await fetch('http://localhost:4000/api/upgrade', {
@@ -128,14 +166,35 @@ const UpgradeProgress = ({ upgradeConfig, onBack, onComplete }) => {
         setUpgradeStatus('failed');
         setEndTime(new Date());
         setErrorMessage(result.error || 'Upgrade failed');
+        setRetrying(false);
+        setCanRetry(retryCount < maxRetries);
       }
     } catch (error) {
       console.error('Upgrade API error:', error);
       setUpgradeStatus('failed');
       setEndTime(new Date());
       setErrorMessage(error.message);
+      setRetrying(false);
+      setCanRetry(retryCount < maxRetries);
     }
   };
+
+  const handleRetry = () => {
+    if (retryCount >= maxRetries) {
+      alert('Maximum retry attempts reached. Please check the logs and try again later.');
+      return;
+    }
+    startUpgrade(true);
+  };
+
+  useEffect(() => {
+    startUpgrade(false);
+    return () => {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+      }
+    };
+  }, []);
 
   const updatePhaseStatus = (log) => {
     setPhases(prev => {
@@ -446,6 +505,7 @@ const generatePDFReport = () => {
               Back to Dashboard
             </button>
 
+
             {upgradeStatus !== 'running' && (
               <button
                 onClick={generatePDFReport}
@@ -456,6 +516,86 @@ const generatePDFReport = () => {
               </button>
             )}
           </div>
+
+                  {/* Enhanced Error Display with Retry */}
+                  {upgradeStatus === 'failed' && (
+                    <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
+                      <div className="flex items-start">
+                        <XCircle className="w-5 h-5 text-red-500 mr-2 mt-0.5 flex-shrink-0" />
+                        <div className="flex-1">
+                          <h3 className="font-medium text-red-800">Upgrade Failed</h3>
+                          <p className="text-sm text-red-700 mb-2">
+                            The upgrade process encountered an error.
+                            {retryCount > 0 && ` (Attempt ${retryCount + 1}/${maxRetries + 1})`}
+                          </p>
+
+                          {errorMessage && (
+                            <div className="text-sm mt-2 space-y-2">
+                              {errorMessage.split('\n\n').map((msg, idx) => (
+                                <div key={idx} className={`p-2 rounded font-mono text-xs ${
+                                  msg.includes('ROLLBACK SUCCESSFUL')
+                                    ? 'bg-green-100 text-green-800 border border-green-300'
+                                    : msg.includes('ROLLBACK')
+                                    ? 'bg-yellow-100 text-yellow-800 border border-yellow-300'
+                                    : 'bg-red-100 text-red-700'
+                                }`}>
+                                  {msg}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+
+                          {/* Retry Button */}
+                          {canRetry && (
+                            <div className="mt-4 flex items-center space-x-3">
+                              <button
+                                onClick={handleRetry}
+                                disabled={retrying}
+                                className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                              >
+                                <RefreshCw className={`w-4 h-4 mr-2 ${retrying ? 'animate-spin' : ''}`} />
+                                {retrying ? 'Retrying...' : `Retry Upgrade (${maxRetries - retryCount} attempts left)`}
+                              </button>
+
+                              <span className="text-xs text-red-600">
+                                Common issues: Services not stopped, file locks, antivirus interference
+                              </span>
+                            </div>
+                          )}
+
+                          {!canRetry && retryCount >= maxRetries && (
+                            <div className="mt-4 p-3 bg-yellow-50 border border-yellow-300 rounded">
+                              <p className="text-sm text-yellow-800 font-medium">
+                                ⚠️ Maximum retry attempts reached
+                              </p>
+                              <p className="text-xs text-yellow-700 mt-1">
+                                Please manually verify:
+                              </p>
+                              <ul className="text-xs text-yellow-700 list-disc list-inside mt-1">
+                                <li>All {tool.name} services are completely stopped</li>
+                                <li>No files are locked by other processes</li>
+                                <li>Antivirus/security software is not blocking operations</li>
+                                <li>You have administrator privileges</li>
+                              </ul>
+                            </div>
+                          )}
+
+                          {/* Diagnostic Information */}
+                          <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded">
+                            <h4 className="text-sm font-medium text-blue-900 mb-1">
+                              Diagnostic Information
+                            </h4>
+                            <div className="text-xs text-blue-800 space-y-1">
+                              <div>Session ID: <code className="bg-blue-100 px-1 rounded">{upgradeConfig.sessionId}</code></div>
+                              <div>Retry Count: {retryCount}/{maxRetries}</div>
+                              <div>Tool: {tool.name}</div>
+                              <div>Path: {upgradeConfig.existingPath}</div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
           <div className="flex items-center mb-4">
             <div className="text-4xl mr-4">{tool.icon}</div>
