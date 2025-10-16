@@ -1,0 +1,549 @@
+import fs from 'fs-extra';
+import path from 'path';
+import { XMLParser, XMLBuilder } from 'fast-xml-parser';
+
+/**
+ * Smart Configuration Merger
+ * 
+ * This module intelligently merges old configuration files with new ones,
+ * preserving user customizations while keeping security patches and updates.
+ */
+
+// ============================================================================
+// Apache HTTPD Configuration Merger
+// ============================================================================
+
+const HTTPD_USER_DIRECTIVES = [
+  'ServerName',
+  'ServerAdmin',
+  'ServerRoot',
+  'DocumentRoot',
+  'Listen',
+  'ErrorLog',
+  'CustomLog',
+  'SSLCertificateFile',
+  'SSLCertificateKeyFile',
+  'SSLCertificateChainFile',
+  'ProxyPass',
+  'ProxyPassReverse',
+  'Redirect',
+  'Alias',
+  'ScriptAlias'
+];
+
+const HTTPD_SECURITY_DIRECTIVES = [
+  'SSLProtocol',
+  'SSLCipherSuite',
+  'SSLHonorCipherOrder',
+  'Header',
+  'ServerTokens',
+  'ServerSignature',
+  'TraceEnable',
+  'FileETag'
+];
+
+async function mergeHttpdConf(oldConfPath, newConfPath, outputPath, logs, sessionId) {
+  logs.push(`[CONFIG_MERGE] Starting Apache HTTPD configuration merge`);
+  logs.push(`[CONFIG_MERGE]   Old: ${oldConfPath}`);
+  logs.push(`[CONFIG_MERGE]   New: ${newConfPath}`);
+  
+  const oldContent = await fs.readFile(oldConfPath, 'utf8');
+  const newContent = await fs.readFile(newConfPath, 'utf8');
+  
+  const oldLines = oldContent.split('\n');
+  const newLines = newContent.split('\n');
+  
+  // Extract user customizations from old config
+  const userCustomizations = extractHttpdUserSettings(oldLines, logs);
+  
+  // Apply to new config while preserving security settings
+  const mergedLines = applyHttpdCustomizations(newLines, userCustomizations, logs);
+  
+  // Write merged config
+  const mergedContent = mergedLines.join('\n');
+  await fs.writeFile(outputPath, mergedContent, 'utf8');
+  
+  // Generate diff report
+  await generateDiffReport(oldContent, mergedContent, outputPath + '.diff.txt', logs);
+  
+  logs.push(`[CONFIG_MERGE] ✓ Apache HTTPD configuration merged successfully`);
+  logs.push(`[CONFIG_MERGE] ✓ Diff report: ${outputPath}.diff.txt`);
+  
+  return {
+    merged: true,
+    userSettings: userCustomizations.length,
+    diffReport: outputPath + '.diff.txt'
+  };
+}
+
+function extractHttpdUserSettings(lines, logs) {
+  const customizations = [];
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    
+    // Skip comments and empty lines
+    if (!line || line.startsWith('#')) continue;
+    
+    // Check if line contains user-specific directive
+    for (const directive of HTTPD_USER_DIRECTIVES) {
+      if (line.startsWith(directive + ' ') || line.startsWith(directive + '\t')) {
+        customizations.push({
+          directive,
+          fullLine: lines[i],
+          lineNumber: i + 1,
+          value: line.substring(directive.length).trim()
+        });
+        
+        logs.push(`[CONFIG_EXTRACT] Found user setting: ${directive} = ${line.substring(directive.length).trim()}`);
+        break;
+      }
+    }
+    
+    // Extract VirtualHost blocks
+    if (line.startsWith('<VirtualHost')) {
+      const vhostBlock = extractBlock(lines, i, '<VirtualHost', '</VirtualHost>');
+      customizations.push({
+        directive: 'VirtualHost',
+        fullLine: vhostBlock.content,
+        lineNumber: i + 1,
+        block: true
+      });
+      logs.push(`[CONFIG_EXTRACT] Found VirtualHost block at line ${i + 1}`);
+      i = vhostBlock.endIndex;
+    }
+    
+    // Extract Directory blocks with user customizations
+    if (line.startsWith('<Directory')) {
+      const dirBlock = extractBlock(lines, i, '<Directory', '</Directory>');
+      if (hasUserCustomizations(dirBlock.content)) {
+        customizations.push({
+          directive: 'Directory',
+          fullLine: dirBlock.content,
+          lineNumber: i + 1,
+          block: true
+        });
+        logs.push(`[CONFIG_EXTRACT] Found Directory block with customizations at line ${i + 1}`);
+      }
+      i = dirBlock.endIndex;
+    }
+  }
+  
+  return customizations;
+}
+
+function applyHttpdCustomizations(newLines, customizations, logs) {
+  const result = [...newLines];
+  let addedCount = 0;
+  let replacedCount = 0;
+  
+  for (const custom of customizations) {
+    if (custom.block) {
+      // For blocks (VirtualHost, Directory), append at the end
+      result.push('');
+      result.push('# User customization migrated from previous version');
+      result.push(custom.fullLine);
+      addedCount++;
+      logs.push(`[CONFIG_APPLY] Added custom block: ${custom.directive}`);
+    } else {
+      // For simple directives, replace if exists, otherwise add
+      let found = false;
+      
+      for (let i = 0; i < result.length; i++) {
+        const line = result[i].trim();
+        
+        if (line.startsWith(custom.directive + ' ') || line.startsWith(custom.directive + '\t')) {
+          // Don't replace security-critical directives
+          if (HTTPD_SECURITY_DIRECTIVES.includes(custom.directive)) {
+            logs.push(`[CONFIG_APPLY] ⚠ Skipping security directive: ${custom.directive}`);
+            continue;
+          }
+          
+          result[i] = custom.fullLine;
+          found = true;
+          replacedCount++;
+          logs.push(`[CONFIG_APPLY] Replaced: ${custom.directive}`);
+          break;
+        }
+      }
+      
+      if (!found) {
+        // Add at the end of the main config section
+        const insertIndex = findInsertionPoint(result);
+        result.splice(insertIndex, 0, '', '# User setting migrated from previous version', custom.fullLine);
+        addedCount++;
+        logs.push(`[CONFIG_APPLY] Added new: ${custom.directive}`);
+      }
+    }
+  }
+  
+  logs.push(`[CONFIG_APPLY] Summary: ${replacedCount} replaced, ${addedCount} added`);
+  return result;
+}
+
+function extractBlock(lines, startIndex, startTag, endTag) {
+  const blockLines = [lines[startIndex]];
+  let i = startIndex + 1;
+  
+  while (i < lines.length) {
+    blockLines.push(lines[i]);
+    if (lines[i].trim().startsWith(endTag)) {
+      break;
+    }
+    i++;
+  }
+  
+  return {
+    content: blockLines.join('\n'),
+    endIndex: i
+  };
+}
+
+function hasUserCustomizations(blockContent) {
+  const userKeywords = ['ProxyPass', 'Redirect', 'Alias', 'SSLCertificate', 'ServerName'];
+  return userKeywords.some(keyword => blockContent.includes(keyword));
+}
+
+function findInsertionPoint(lines) {
+  // Find the last non-empty, non-comment line before any Include directives
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (line && !line.startsWith('#') && !line.startsWith('Include')) {
+      return i + 1;
+    }
+  }
+  return lines.length;
+}
+
+// ============================================================================
+// Apache Tomcat/TomEE Configuration Merger (XML-based)
+// ============================================================================
+
+async function mergeTomcatServerXml(oldXmlPath, newXmlPath, outputPath, logs, sessionId) {
+  logs.push(`[CONFIG_MERGE] Starting Tomcat server.xml merge`);
+  
+  const parser = new XMLParser({
+    ignoreAttributes: false,
+    attributeNamePrefix: '@_',
+    preserveOrder: false
+  });
+  
+  const oldXml = await fs.readFile(oldXmlPath, 'utf8');
+  const newXml = await fs.readFile(newXmlPath, 'utf8');
+  
+  const oldConfig = parser.parse(oldXml);
+  const newConfig = parser.parse(newXml);
+  
+  // Extract user customizations from old config
+  const customizations = extractTomcatUserSettings(oldConfig, logs);
+  
+  // Apply to new config
+  applyTomcatCustomizations(newConfig, customizations, logs);
+  
+  // Build merged XML
+  const builder = new XMLBuilder({
+    ignoreAttributes: false,
+    attributeNamePrefix: '@_',
+    format: true,
+    indentBy: '  ',
+    suppressEmptyNode: true
+  });
+  
+  const mergedXml = builder.build(newConfig);
+  
+  await fs.writeFile(outputPath, mergedXml, 'utf8');
+  await generateDiffReport(oldXml, mergedXml, outputPath + '.diff.txt', logs);
+  
+  logs.push(`[CONFIG_MERGE] ✓ Tomcat server.xml merged successfully`);
+  
+  return {
+    merged: true,
+    customizations: Object.keys(customizations).length,
+    diffReport: outputPath + '.diff.txt'
+  };
+}
+
+function extractTomcatUserSettings(config, logs) {
+  const customizations = {
+    connectors: [],
+    hosts: [],
+    contexts: [],
+    valves: [],
+    resources: []
+  };
+  
+  try {
+    const server = config.Server;
+    
+    if (!server) return customizations;
+    
+    // Extract Connector customizations (ports, protocols, SSL config)
+    if (server.Service) {
+      const services = Array.isArray(server.Service) ? server.Service : [server.Service];
+      
+      services.forEach(service => {
+        if (service.Connector) {
+          const connectors = Array.isArray(service.Connector) ? service.Connector : [service.Connector];
+          
+          connectors.forEach(connector => {
+            // Only preserve user-modified connectors (non-default ports or SSL)
+            const port = connector['@_port'];
+            const isSSL = connector['@_SSLEnabled'] === 'true' || connector['@_secure'] === 'true';
+            const isCustomPort = port && !['8080', '8009', '8005'].includes(port);
+            
+            if (isSSL || isCustomPort) {
+              customizations.connectors.push(connector);
+              logs.push(`[CONFIG_EXTRACT] Found custom Connector: port=${port}, SSL=${isSSL}`);
+            }
+          });
+        }
+        
+        // Extract Host customizations
+        if (service.Engine && service.Engine.Host) {
+          const hosts = Array.isArray(service.Engine.Host) ? service.Engine.Host : [service.Engine.Host];
+          
+          hosts.forEach(host => {
+            const name = host['@_name'];
+            if (name && name !== 'localhost') {
+              customizations.hosts.push(host);
+              logs.push(`[CONFIG_EXTRACT] Found custom Host: ${name}`);
+            }
+            
+            // Extract Context customizations
+            if (host.Context) {
+              const contexts = Array.isArray(host.Context) ? host.Context : [host.Context];
+              contexts.forEach(context => {
+                customizations.contexts.push(context);
+                logs.push(`[CONFIG_EXTRACT] Found Context: ${context['@_path'] || '/'}`);
+              });
+            }
+          });
+        }
+      });
+    }
+  } catch (error) {
+    logs.push(`[CONFIG_EXTRACT] Error: ${error.message}`);
+  }
+  
+  return customizations;
+}
+
+function applyTomcatCustomizations(newConfig, customizations, logs) {
+  try {
+    const server = newConfig.Server;
+    
+    if (!server || !server.Service) return;
+    
+    const service = Array.isArray(server.Service) ? server.Service[0] : server.Service;
+    
+    // Apply custom connectors
+    if (customizations.connectors.length > 0) {
+      if (!service.Connector) {
+        service.Connector = [];
+      } else if (!Array.isArray(service.Connector)) {
+        service.Connector = [service.Connector];
+      }
+      
+      customizations.connectors.forEach(connector => {
+        // Check if connector with same port already exists
+        const existingIndex = service.Connector.findIndex(c => c['@_port'] === connector['@_port']);
+        
+        if (existingIndex >= 0) {
+          // Merge attributes, preferring new security settings
+          const existing = service.Connector[existingIndex];
+          service.Connector[existingIndex] = {
+            ...connector,
+            // Keep new security-related attributes
+            '@_SSLProtocol': existing['@_SSLProtocol'] || connector['@_SSLProtocol'],
+            '@_ciphers': existing['@_ciphers'] || connector['@_ciphers'],
+            '@_SSLHonorCipherOrder': existing['@_SSLHonorCipherOrder'] || connector['@_SSLHonorCipherOrder']
+          };
+          logs.push(`[CONFIG_APPLY] Merged Connector on port ${connector['@_port']}`);
+        } else {
+          service.Connector.push(connector);
+          logs.push(`[CONFIG_APPLY] Added new Connector on port ${connector['@_port']}`);
+        }
+      });
+    }
+    
+    // Apply custom hosts
+    if (customizations.hosts.length > 0 && service.Engine) {
+      if (!service.Engine.Host) {
+        service.Engine.Host = [];
+      } else if (!Array.isArray(service.Engine.Host)) {
+        service.Engine.Host = [service.Engine.Host];
+      }
+      
+      customizations.hosts.forEach(host => {
+        const hostName = host['@_name'];
+        const existingIndex = service.Engine.Host.findIndex(h => h['@_name'] === hostName);
+        
+        if (existingIndex < 0) {
+          service.Engine.Host.push(host);
+          logs.push(`[CONFIG_APPLY] Added custom Host: ${hostName}`);
+        }
+      });
+    }
+    
+  } catch (error) {
+    logs.push(`[CONFIG_APPLY] Error: ${error.message}`);
+  }
+}
+
+// ============================================================================
+// JDK Configuration Merger
+// ============================================================================
+
+async function mergeJavaSecurityPolicy(oldPolicyPath, newPolicyPath, outputPath, logs, sessionId) {
+  logs.push(`[CONFIG_MERGE] Starting Java security policy merge`);
+  
+  const oldContent = await fs.readFile(oldPolicyPath, 'utf8');
+  const newContent = await fs.readFile(newPolicyPath, 'utf8');
+  
+  // Extract user-defined grants
+  const userGrants = extractJavaUserGrants(oldContent, logs);
+  
+  // Append user grants to new policy
+  let mergedContent = newContent;
+  
+  if (userGrants.length > 0) {
+    mergedContent += '\n\n// ============================================\n';
+    mergedContent += '// User-defined grants from previous installation\n';
+    mergedContent += '// ============================================\n\n';
+    mergedContent += userGrants.join('\n\n');
+  }
+  
+  await fs.writeFile(outputPath, mergedContent, 'utf8');
+  await generateDiffReport(oldContent, mergedContent, outputPath + '.diff.txt', logs);
+  
+  logs.push(`[CONFIG_MERGE] ✓ Java security policy merged with ${userGrants.length} user grants`);
+  
+  return {
+    merged: true,
+    userGrants: userGrants.length,
+    diffReport: outputPath + '.diff.txt'
+  };
+}
+
+function extractJavaUserGrants(content, logs) {
+  const grants = [];
+  const grantRegex = /grant\s*{[\s\S]*?};/g;
+  const matches = content.match(grantRegex) || [];
+  
+  // Filter out default JDK grants (those that reference system properties)
+  const userGrants = matches.filter(grant => {
+    const isDefaultGrant = grant.includes('${java.home}') || 
+                          grant.includes('${java.ext.dirs}') ||
+                          grant.includes('"file:${java.home}');
+    return !isDefaultGrant;
+  });
+  
+  userGrants.forEach((grant, index) => {
+    grants.push(grant);
+    logs.push(`[CONFIG_EXTRACT] Found user grant #${index + 1}`);
+  });
+  
+  return grants;
+}
+
+// ============================================================================
+// Diff Report Generator
+// ============================================================================
+
+async function generateDiffReport(oldContent, newContent, reportPath, logs) {
+  const oldLines = oldContent.split('\n');
+  const newLines = newContent.split('\n');
+  
+  const report = [];
+  report.push('='.repeat(80));
+  report.push('CONFIGURATION DIFF REPORT');
+  report.push(`Generated: ${new Date().toISOString()}`);
+  report.push('='.repeat(80));
+  report.push('');
+  
+  // Simple line-by-line diff
+  const maxLen = Math.max(oldLines.length, newLines.length);
+  let changedLines = 0;
+  
+  for (let i = 0; i < maxLen; i++) {
+    const oldLine = oldLines[i] || '';
+    const newLine = newLines[i] || '';
+    
+    if (oldLine !== newLine) {
+      changedLines++;
+      report.push(`Line ${i + 1}:`);
+      report.push(`  OLD: ${oldLine}`);
+      report.push(`  NEW: ${newLine}`);
+      report.push('');
+    }
+  }
+  
+  report.push('='.repeat(80));
+  report.push(`Total changes: ${changedLines} lines`);
+  report.push('='.repeat(80));
+  
+  await fs.writeFile(reportPath, report.join('\n'), 'utf8');
+  logs.push(`[DIFF_REPORT] Generated diff report with ${changedLines} changes`);
+}
+
+// ============================================================================
+// Main Merger Function
+// ============================================================================
+
+export async function smartMergeConfiguration(toolType, oldConfigPath, newConfigPath, outputPath, logs, sessionId = null) {
+  logs.push(`[SMART_MERGE] ═══════════════════════════════════════════════════════════`);
+  logs.push(`[SMART_MERGE] SMART CONFIGURATION MERGE - Preserving Security Patches`);
+  logs.push(`[SMART_MERGE] ═══════════════════════════════════════════════════════════`);
+  logs.push(`[SMART_MERGE] Tool Type: ${toolType}`);
+  logs.push(`[SMART_MERGE] Strategy: Extract user settings → Apply to patched config`);
+  logs.push('');
+  
+  const toolLower = toolType.toLowerCase();
+  let result;
+  
+  try {
+    if (toolLower.includes('httpd') || toolLower.includes('apache')) {
+      result = await mergeHttpdConf(oldConfigPath, newConfigPath, outputPath, logs, sessionId);
+    } else if (toolLower.includes('tomcat') || toolLower.includes('tomee')) {
+      result = await mergeTomcatServerXml(oldConfigPath, newConfigPath, outputPath, logs, sessionId);
+    } else if (toolLower.includes('jdk') || toolLower.includes('java')) {
+      result = await mergeJavaSecurityPolicy(oldConfigPath, newConfigPath, outputPath, logs, sessionId);
+    } else {
+      throw new Error(`Unsupported tool type for smart merge: ${toolType}`);
+    }
+    
+    logs.push('');
+    logs.push(`[SMART_MERGE] ✓✓✓ MERGE COMPLETED SUCCESSFULLY ✓✓✓`);
+    logs.push(`[SMART_MERGE] ✓ Security patches preserved from new version`);
+    logs.push(`[SMART_MERGE] ✓ User customizations applied from old version`);
+    logs.push(`[SMART_MERGE] ✓ Diff report generated for review`);
+    logs.push(`[SMART_MERGE] ═══════════════════════════════════════════════════════════`);
+    
+    return result;
+    
+  } catch (error) {
+    logs.push(`[SMART_MERGE] ✗ ERROR: ${error.message}`);
+    logs.push(`[SMART_MERGE] Falling back to simple copy...`);
+    
+    // Fallback: just copy the new file and backup the old one
+    await fs.copy(newConfigPath, outputPath, { overwrite: true });
+    await fs.copy(oldConfigPath, outputPath + '.old', { overwrite: true });
+    
+    logs.push(`[SMART_MERGE] ⚠ Original config backed up to: ${outputPath}.old`);
+    logs.push(`[SMART_MERGE] ⚠ Manual review required!`);
+    
+    return {
+      merged: false,
+      error: error.message,
+      fallback: true
+    };
+  }
+}
+
+// Export all functions
+export {
+  mergeHttpdConf,
+  mergeTomcatServerXml,
+  mergeJavaSecurityPolicy,
+  generateDiffReport
+};
