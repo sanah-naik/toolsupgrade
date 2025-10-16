@@ -239,69 +239,194 @@ const UpgradeProgress = ({ upgradeConfig, onBack, onComplete }) => {
     }
   };
 
-  const generatePDFReport = () => {
-    try {
-      const doc = new jsPDF();
+// REPLACE generatePDFReport function in UpgradeProgress.tsx (around line 120) with:
 
-      doc.setFontSize(20);
-      doc.text(`${tool.name} Upgrade Report`, 20, 20);
+const generatePDFReport = () => {
+  try {
+    const doc = new jsPDF();
+    let yPos = 20;
 
-      doc.setFontSize(12);
-      doc.text(`Start Time: ${startTime.toLocaleString()}`, 20, 35);
-      if (endTime) {
-        doc.text(`End Time: ${endTime.toLocaleString()}`, 20, 45);
-        doc.text(`Duration: ${Math.round((endTime - startTime) / 1000)} seconds`, 20, 55);
+    // Header with logo/icon
+    doc.setFillColor(59, 130, 246);
+    doc.rect(0, 0, 210, 30, 'F');
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(24);
+    doc.text(`${tool.name} Upgrade Report`, 20, 20);
+    
+    // Reset color
+    doc.setTextColor(0, 0, 0);
+    yPos = 40;
+
+    // Executive Summary Box
+    doc.setFillColor(240, 240, 240);
+    doc.roundedRect(15, yPos, 180, 50, 3, 3, 'F');
+    doc.setFontSize(14);
+    doc.setFont(undefined, 'bold');
+    doc.text('Executive Summary', 20, yPos + 10);
+    
+    doc.setFontSize(10);
+    doc.setFont(undefined, 'normal');
+    doc.text(`Start Time: ${startTime.toLocaleString()}`, 20, yPos + 20);
+    if (endTime) {
+      doc.text(`End Time: ${endTime.toLocaleString()}`, 20, yPos + 28);
+      doc.text(`Total Duration: ${Math.round((endTime - startTime) / 1000 / 60)} minutes`, 20, yPos + 36);
+    }
+    
+    // Status badge
+    const statusColor = upgradeStatus === 'completed' ? [34, 197, 94] : 
+                       upgradeStatus === 'failed' ? [239, 68, 68] : [59, 130, 246];
+    doc.setFillColor(...statusColor);
+    doc.roundedRect(140, yPos + 18, 40, 8, 2, 2, 'F');
+    doc.setTextColor(255, 255, 255);
+    doc.setFontSize(9);
+    doc.text(upgradeStatus.toUpperCase(), 145, yPos + 24);
+    doc.setTextColor(0, 0, 0);
+    
+    yPos += 60;
+
+    // Configuration Details
+    doc.setFontSize(14);
+    doc.setFont(undefined, 'bold');
+    doc.text('Configuration Details', 20, yPos);
+    yPos += 10;
+    
+    doc.setFontSize(10);
+    doc.setFont(undefined, 'normal');
+    const configDetails = [
+      ['Existing Path:', upgradeConfig.existingPath],
+      ['Archive:', upgradeConfig.newToolZip?.name || 'N/A'],
+      ['Backup Path:', upgradeConfig.backupPath],
+      ['Preserve Config:', upgradeConfig.preserveConfig ? 'Yes' : 'No'],
+      ['Preserve Data:', upgradeConfig.preserveData ? 'Yes' : 'No'],
+      ['Auto Start:', upgradeConfig.autoStart ? 'Yes' : 'No']
+    ];
+    
+    if (upgradeConfig.certFolderPath) {
+      configDetails.push(['Certificate Path:', upgradeConfig.certFolderPath]);
+    }
+    
+    autoTable(doc, {
+      body: configDetails,
+      startY: yPos,
+      theme: 'plain',
+      styles: { fontSize: 9, cellPadding: 3 },
+      columnStyles: {
+        0: { fontStyle: 'bold', cellWidth: 50 },
+        1: { cellWidth: 130 }
       }
-      doc.text(`Status: ${upgradeStatus.toUpperCase()}`, 20, 65);
+    });
+    
+    yPos = doc.lastAutoTable.finalY + 15;
 
-      const phaseData = phases.map(phase => [
+    // Phase Summary with visual indicators
+    doc.setFontSize(14);
+    doc.setFont(undefined, 'bold');
+    doc.text('Upgrade Phases', 20, yPos);
+    yPos += 10;
+    
+    const phaseData = phases.map(phase => {
+      const statusIcon = phase.status === 'completed' ? '✓' :
+                        phase.status === 'running' ? '⟳' :
+                        phase.status === 'error' ? '✗' : '○';
+      return [
+        statusIcon,
         phase.title,
         phase.status.toUpperCase(),
-        `${phase.progress}%`
-      ]);
+        `${phase.progress}%`,
+        `${phase.logs.length} logs`
+      ];
+    });
 
-      autoTable(doc, {
-        head: [['Phase', 'Status', 'Progress']],
-        body: phaseData,
-        startY: 75,
-        theme: 'striped',
-        headStyles: { fillColor: [41, 128, 185] }
-      });
-
-      let yPosition = doc.lastAutoTable.finalY + 20;
-      doc.setFontSize(14);
-      doc.text('Detailed Logs:', 20, yPosition);
-
-      yPosition += 10;
-      doc.setFontSize(10);
-
-      allLogs.forEach((log, index) => {
-        if (yPosition > 280) {
-          doc.addPage();
-          yPosition = 20;
+    autoTable(doc, {
+      head: [['', 'Phase', 'Status', 'Progress', 'Logs']],
+      body: phaseData,
+      startY: yPos,
+      theme: 'striped',
+      headStyles: { 
+        fillColor: [59, 130, 246],
+        fontSize: 10,
+        fontStyle: 'bold'
+      },
+      styles: { fontSize: 9 },
+      columnStyles: {
+        0: { cellWidth: 10, halign: 'center' },
+        1: { cellWidth: 70 },
+        2: { cellWidth: 30 },
+        3: { cellWidth: 25 },
+        4: { cellWidth: 25 }
+      },
+      didParseCell: function(data) {
+        if (data.section === 'body' && data.column.index === 0) {
+          const status = phases[data.row.index].status;
+          data.cell.styles.textColor = status === 'completed' ? [34, 197, 94] :
+                                      status === 'error' ? [239, 68, 68] :
+                                      status === 'running' ? [59, 130, 246] : [156, 163, 175];
         }
+      }
+    });
 
-        const cleanLog = log.replace(/\[.*?\]/g, '').trim();
-        const lines = doc.splitTextToSize(cleanLog, 170);
+    // Detailed Logs Section
+    doc.addPage();
+    yPos = 20;
+    
+    doc.setFontSize(16);
+    doc.setFont(undefined, 'bold');
+    doc.text('Detailed Execution Logs', 20, yPos);
+    yPos += 15;
 
-        lines.forEach(line => {
-          if (yPosition > 280) {
-            doc.addPage();
-            yPosition = 20;
-          }
-          doc.text(line, 20, yPosition);
-          yPosition += 5;
-        });
+    doc.setFontSize(8);
+    doc.setFont('courier', 'normal');
+    
+    allLogs.forEach((log, index) => {
+      if (yPos > 280) {
+        doc.addPage();
+        yPos = 20;
+      }
+
+      // Color code log lines
+      let logColor = [0, 0, 0]; // default black
+      if (log.includes('[ERROR]')) logColor = [239, 68, 68];
+      else if (log.includes('[WARNING]')) logColor = [234, 179, 8];
+      else if (log.includes('✓')) logColor = [34, 197, 94];
+      else if (log.includes('[INFO]')) logColor = [59, 130, 246];
+      
+      doc.setTextColor(...logColor);
+      
+      const cleanLog = log.replace(/\[.*?\]/g, '').trim();
+      const lines = doc.splitTextToSize(cleanLog, 170);
+
+      lines.forEach(line => {
+        if (yPos > 280) {
+          doc.addPage();
+          yPos = 20;
+        }
+        doc.text(line, 20, yPos);
+        yPos += 4;
       });
+    });
 
-      const fileName = `${tool.name.replace(/\s+/g, '_')}_upgrade_report_${new Date().toISOString().split('T')[0]}.pdf`;
-      doc.save(fileName);
-
-    } catch (error) {
-      console.error('Error generating PDF:', error);
-      alert('Failed to generate PDF report. Please check the console for details.');
+    // Footer on all pages
+    const pageCount = doc.internal.getNumberOfPages();
+    doc.setTextColor(128, 128, 128);
+    doc.setFontSize(8);
+    for (let i = 1; i <= pageCount; i++) {
+      doc.setPage(i);
+      doc.text(
+        `Page ${i} of ${pageCount} | Generated: ${new Date().toLocaleString()}`,
+        105,
+        290,
+        { align: 'center' }
+      );
     }
-  };
+
+    const fileName = `${tool.name.replace(/\s+/g, '_')}_Upgrade_Report_${new Date().toISOString().split('T')[0]}_${upgradeStatus}.pdf`;
+    doc.save(fileName);
+
+  } catch (error) {
+    console.error('Error generating PDF:', error);
+    alert('Failed to generate PDF report. Check console for details.');
+  }
+};
 
   const completedPhases = phases.filter(p => p.status === 'completed').length;
   const totalPhases = phases.length;

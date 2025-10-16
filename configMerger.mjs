@@ -105,6 +105,18 @@ KeepAliveTimeout 5
 # 15. Log Security Events
 LogLevel warn ssl:warn
 
+// ADD these missing items to APACHE_VAPT_CONFIG in configMerger.mjs (around line 35)
+
+# 16. Secure Cookie Configuration (MISSING - Critical from PDF)
+Header edit Set-Cookie ^(.*)$ $1;HttpOnly;Secure
+Header always edit Set-Cookie (.*) "$1; SameSite=Strict"
+
+# 17. Disable HTTP/1.0 Protocol (MISSING)
+Protocols h2 http/1.1
+
+# 18. Request Timeout (adjust from current generic Timeout)
+RequestReadTimeout header=20-40,MinRate=500 body=20,MinRate=500
+
 # ============================================================================
 # END OF VAPT SECURITY HARDENING
 # ============================================================================
@@ -391,7 +403,8 @@ function buildApacheConfig(config, logs) {
 const TOMCAT_VAPT_SETTINGS = {
   server: {
     '@_port': '8005',
-    '@_shutdown': 'SHUTDOWN_' + Math.random().toString(36).substring(7) // Random shutdown command
+    '@_shutdown': 'SHUTDOWN_' + Math.random().toString(36).substring(7), // Random shutdown command
+    '@_port': '-1', // Disable shutdown port for security
   },
   connector: {
     '@_maxThreads': '150',
@@ -408,12 +421,27 @@ const TOMCAT_VAPT_SETTINGS = {
     '@_sslProtocol': 'TLS',
     '@_sslEnabledProtocols': 'TLSv1.2,TLSv1.3',
     '@_ciphers': 'TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384',
-    '@_SSLHonorCipherOrder': 'true'
+    '@_SSLHonorCipherOrder': 'true',
+    '@_URIEncoding': 'UTF-8',
+    '@_useBodyEncodingForURI': 'true',
+    '@_allowTrace': 'false', // Critical - disables TRACE method
+    '@_maxPostSize': '2097152', // 2MB limit
+    '@_maxSavePostSize': '4096',
+    '@_secure': 'true',
+    '@_scheme': 'https',
   },
   valve: {
     '@_className': 'org.apache.catalina.valves.ErrorReportValve',
     '@_showReport': 'false',
     '@_showServerInfo': 'false'
+  },
+  // ADD THIS NEW VALVE for access logging:
+  accessLogValve: {
+    '@_className': 'org.apache.catalina.valves.AccessLogValve',
+    '@_directory': 'logs',
+    '@_prefix': 'localhost_access_log',
+    '@_suffix': '.txt',
+    '@_pattern': '%h %l %u %t "%r" %s %b'
   }
 };
 
@@ -443,6 +471,7 @@ async function mergeTomcatConfig(oldXmlPath, newXmlPath, outputPath, logs, sessi
 
   // Apply VAPT hardening inline
   applyTomcatVAPT(newConfig, logs);
+  await apply3DSpaceVAPT(outputPath, logs, sessionId);
 
   // Build final XML
   const builder = new XMLBuilder({
@@ -767,6 +796,65 @@ async function importCertificates(certFolder, jdkPath, password, logs) {
   logs.push(`[JDK_CERT] ✓ Certificate import completed: ${imported}/${certFiles.length} successful`);
   return imported;
 }
+
+async function apply3DSpaceVAPT(tomeeConfigPath, logs, sessionId) {
+  logStep(logs, '═══════════════════════════════════════════════════════════', 'INFO', sessionId);
+  logStep(logs, 'APPLYING 3DSPACE VAPT FIXES', 'INFO', sessionId);
+  logStep(logs, '═══════════════════════════════════════════════════════════', 'INFO', sessionId);
+
+  // Fix #3: XSS Protection in emxSystem.properties
+  const emxSystemPath = path.join(
+    path.dirname(tomeeConfigPath), 
+    '..', 
+    'webapps', 
+    '3dspace', 
+    'WEB-INF', 
+    'classes', 
+    'emxSystem.properties'
+  );
+
+  if (await fs.pathExists(emxSystemPath)) {
+    let content = await fs.readFile(emxSystemPath, 'utf8');
+    
+    // Add if not exists
+    if (!content.includes('emxFramework.InputFilter.BadChars')) {
+      content += '\n\n# XSS Protection - VAPT Fix #3\n';
+      content += 'emxFramework.InputFilter.BadChars=<|>|"|\'|%|;|)|(|&|+|-\n';
+      content += 'emxFramework.InputFilter.BadRegE=(?is)prog(ram)?\\\\s*\\\\[.*\\\\]|(?is)exec(ute)?\\\\s*\\\\[.*\\\\]|(?is)eval.*\\\\(|(?s)".*\\\\*|(?s)\'.*\\\\*|(?is)[file://ssrc(/s*)=|(%3fi)(%3c/s*)(/*)script|(%3fis)(%3c/s*)(meta)/s.*content(/s*)=|(%3fi)javascript/s*:|/*%5b/s/S%5d*%3f/*/|(?is)%3c!--|(?is)--%3e|(?is)/s+on%5ba-z%5d+/s*=|(?i)/x%5ba-f0-9%5d%7b2%7d|(?i)/u00%5ba-f0-9%5d%7b2%7d|(?fs)%22/s*/)/s*;|(?fs)\'/s*/)/s*]\n';
+      
+      await fs.writeFile(emxSystemPath, content, 'utf8');
+      logStep(logs, '✓ Applied 3DSpace XSS protection filters', 'INFO', sessionId);
+    }
+  }
+
+  // Fix #6: File Upload Restrictions in emxComponents.properties
+  const emxCompPath = path.join(
+    path.dirname(tomeeConfigPath),
+    '..',
+    'webapps',
+    '3dspace',
+    'WEB-INF',
+    'classes',
+    'emxComponents.properties'
+  );
+
+  if (await fs.pathExists(emxCompPath)) {
+    let content = await fs.readFile(emxCompPath, 'utf8');
+    
+    if (!content.includes('emxComponents.Commondocument.SupportedFormats')) {
+      content += '\n\n# File Upload Security - VAPT Fix #6\n';
+      content += 'emxComponents.Commondocument.SupportedFormats=docx,xlsx,pdf,jpg,png,txt,avi,mp4,flv,gif\n';
+      content += 'emxComponents.Commondocument.RestrictedFormats=exe,htm,html,php,bin,pl,vbs,RAR,ZIP,CAB,ARJ,LZH,TAR,GZip,UUE,ISO,BZIP2,Z,7-Zip\n';
+      
+      await fs.writeFile(emxCompPath, content, 'utf8');
+      logStep(logs, '✓ Applied file upload restrictions', 'INFO', sessionId);
+    }
+  }
+
+  logStep(logs, '✓ 3DSpace VAPT fixes completed', 'INFO', sessionId);
+}
+
+// CALL THIS in applyTomcatVAPT 
 
 async function mergeJavaSecurityPolicy(oldPolicyPath, newPolicyPath, outputPath, logs, sessionId) {
   logs.push(`[JDK_POLICY] Merging Java security policies`);

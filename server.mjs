@@ -370,6 +370,39 @@ async function extractArchive(archivePath, originalName, extractTo, logs, sessio
   }
 }
 
+// ADD to server.mjs after line 50
+
+async function installModEvasive(apachePath, logs, sessionId) {
+  logStep(logs, 'Installing mod_evasive for rate limiting...', 'INFO', sessionId);
+  
+  const modulePath = path.join(apachePath, 'modules', 'mod_evasive.so');
+  const httpdConfPath = path.join(apachePath, 'conf', 'httpd.conf');
+  
+  // Check if already configured
+  let httpdConf = await fs.readFile(httpdConfPath, 'utf8');
+  
+  if (!httpdConf.includes('mod_evasive')) {
+    httpdConf += '\n\n# Rate Limiting - VAPT Fix #7\n';
+    httpdConf += 'LoadModule evasive_module modules/mod_evasive.so\n';
+    httpdConf += '<IfModule mod_evasive.c>\n';
+    httpdConf += '  DOSEnabled true\n';
+    httpdConf += '  DOSHashTableSize 3097\n';
+    httpdConf += '  DOSPageCount 2\n';
+    httpdConf += '  DOSSiteCount 50\n';
+    httpdConf += '  DOSPageInterval 1\n';
+    httpdConf += '  DOSSiteInterval 1\n';
+    httpdConf += '  DOSBlockingPeriod 10\n';
+    httpdConf += '</IfModule>\n';
+    
+    await fs.writeFile(httpdConfPath, httpdConf, 'utf8');
+    logStep(logs, '✓ mod_evasive rate limiting configured', 'INFO', sessionId);
+    logStep(logs, '⚠ NOTE: mod_evasive.so must be manually downloaded from Apache Lounge', 'WARNING', sessionId);
+  }
+}
+
+// CALL in comprehensivePreserveHTTPD_SECURE (around line 650)
+
+
 // Helper function to copy only recent logs
 async function copyRecentLogs(sourceDir, targetDir, daysToKeep, logs, sessionId) {
   await fs.ensureDir(targetDir);
@@ -838,6 +871,96 @@ async function comprehensivePreserveJDK_SECURE(oldJdk, newJdk, logs, sessionId =
   logStep(logs, `  - Skipped: ${skippedCount} items`, 'INFO', sessionId);
   logStep(logs, '═══════════════════════════════════════════════════════════', 'INFO', sessionId);
 }
+// REPLACE the function in server.mjs (around line 850) with this enhanced version:
+
+async function detectAndStopServices(toolType, installPath, logs, sessionId) {
+  logStep(logs, '═══════════════════════════════════════════════════════════', 'INFO', sessionId);
+  logStep(logs, `Detecting and stopping ${toolType} services`, 'INFO', sessionId);
+  logStep(logs, '═══════════════════════════════════════════════════════════', 'INFO', sessionId);
+
+  const toolLower = toolType.toLowerCase();
+  const stoppedServices = [];
+
+  // Apache HTTPD - Enhanced
+  if (toolLower.includes('apache') || toolLower.includes('httpd')) {
+    const apacheServices = ['Apache', 'Apache2.4', 'Apache2.2', 'httpd', 'apache2'];
+
+    for (const service of apacheServices) {
+      const stopped = await stopService(service, logs, sessionId);
+      if (stopped) stoppedServices.push(service);
+    }
+
+    // Kill processes MULTIPLE times to ensure cleanup
+    for (let i = 0; i < 3; i++) {
+      if (process.platform === 'win32') {
+        try {
+          execSync('taskkill /f /im httpd.exe', { stdio: 'ignore' });
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        } catch (e) { /* ignore */ }
+      } else {
+        try {
+          execSync('pkill -9 httpd', { stdio: 'ignore' });
+          execSync('pkill -9 apache2', { stdio: 'ignore' });
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        } catch (e) { /* ignore */ }
+      }
+    }
+    
+    logStep(logs, `✓ Apache cleanup completed (${3} attempts)`, 'INFO', sessionId);
+  }
+
+  // Tomcat/TomEE - Enhanced
+  if (toolLower.includes('tomcat') || toolLower.includes('tomee')) {
+    const tomcatServices = [
+      'Tomcat9', 'Tomcat10', 'Tomcat8', 'tomcat', 'tomee',
+      '3DSpace_CAS', '3DSpace_NoCAS' // Add 3DSpace specific
+    ];
+
+    for (const service of tomcatServices) {
+      const stopped = await stopService(service, logs, sessionId);
+      if (stopped) stoppedServices.push(service);
+    }
+
+    // Kill Java/Tomcat processes - enhanced detection
+    if (process.platform === 'win32') {
+      try {
+        const processes = execSync('wmic process where "name=\'java.exe\'" get commandline,processid', { encoding: 'utf8' });
+        const lines = processes.split('\n');
+
+        for (const line of lines) {
+          if (line.includes('catalina') || line.includes('tomcat') || 
+              line.includes('tomee') || line.includes('3DSpace')) {
+            const match = line.match(/(\d+)\s*$/);
+            if (match) {
+              const pid = match[1];
+              try {
+                execSync(`taskkill /f /pid ${pid}`, { stdio: 'ignore' });
+                logStep(logs, `✓ Killed Tomcat process (PID: ${pid})`, 'INFO', sessionId);
+              } catch (e) { /* ignore */ }
+            }
+          }
+        }
+      } catch (e) {
+        logStep(logs, `ℹ No Tomcat Java processes found`, 'INFO', sessionId);
+      }
+    } else {
+      try {
+        execSync('pkill -9 -f "catalina|tomcat|tomee|3DSpace"', { stdio: 'ignore' });
+        logStep(logs, `✓ Killed Tomcat processes`, 'INFO', sessionId);
+      } catch (e) {
+        logStep(logs, `ℹ No Tomcat processes found`, 'INFO', sessionId);
+      }
+    }
+  }
+
+  // Wait for complete shutdown
+  await new Promise(resolve => setTimeout(resolve, 5000));
+  
+  logStep(logs, `✓ Service stop completed. Stopped: ${stoppedServices.length} service(s)`, 'INFO', sessionId);
+  logStep(logs, '═══════════════════════════════════════════════════════════', 'INFO', sessionId);
+
+  return stoppedServices;
+}
 
 async function findRootFolder(extractDir, toolType, existingPath, logs, sessionId = null) {
   logStep(logs, '═══════════════════════════════════════════════════════════', 'INFO', sessionId);
@@ -1046,6 +1169,8 @@ app.post('/api/upgrade', upload.single('newArchive'), async (req, res) => {
       if (toolLower.includes('httpd') || toolLower.includes('apache')) {
         logStep(logs, 'Tool type: Apache HTTPD detected', 'INFO', sessionId);
         await comprehensivePreserveHTTPD_SECURE(existingPath, actualRoot, logs, sessionId);
+        await installModEvasive(newHttpd, logs, sessionId);
+
       }
     } else {
       logStep(logs, 'PHASE 3: Skipping preservation (disabled in config)', 'INFO', sessionId);
