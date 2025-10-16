@@ -26,6 +26,7 @@ app.use((req, res, next) => {
 
 // Store active SSE clients
 const activeClients = new Map();
+const activeUpgrades = new Set();
 
 function isRunningAsAdmin() {
   if (process.platform === 'win32') {
@@ -161,7 +162,7 @@ async function backupWithStructure(src, userBackupRoot, toolType, logs, sessionI
   logStep(logs, 'STARTING BACKUP PROCESS', 'INFO', sessionId);
   logStep(logs, '═══════════════════════════════════════════════════════════', 'INFO', sessionId);
 
-  const stamp = now();
+  const stamp = Date.now(); // Use millisecond timestamp for uniqueness
   const toolSanitized = toolType.replace(/[^\w]+/g, '');
   const backupFolder = path.join(userBackupRoot, `${toolSanitized}_${stamp}`);
 

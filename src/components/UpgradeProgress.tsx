@@ -1,7 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ArrowLeft, CheckCircle, XCircle, Clock, AlertTriangle, Terminal, Download, FileText } from 'lucide-react';
-import { jsPDF } from 'jspdf';
-import autoTable from 'jspdf-autotable';
+import { ArrowLeft, CheckCircle, XCircle, Clock, Terminal, Download, FileText, RefreshCw } from 'lucide-react';
 
 const UPGRADE_PHASES = [
   {
@@ -68,7 +66,6 @@ const UpgradeProgress = ({ upgradeConfig, onBack, onComplete }) => {
   const [upgradeStatus, setUpgradeStatus] = useState('running');
   const [startTime] = useState(new Date());
   const [endTime, setEndTime] = useState(null);
-  const [duration, setDuration] = useState(0);
   const [errorMessage, setErrorMessage] = useState('');
   const [retrying, setRetrying] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
@@ -77,41 +74,27 @@ const UpgradeProgress = ({ upgradeConfig, onBack, onComplete }) => {
   const eventSourceRef = useRef(null);
 
   const maxRetries = 3;
-
   const tool = upgradeConfig.tool || { name: 'Tool', icon: '🔧' };
 
-  useEffect(() => {
-    startUpgrade();
-    return () => {
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-      }
-    };
-  }, []);
+  const startUpgrade = async (isRetry = false) => {
+    if (isRetry) {
+      setRetrying(true);
+      setRetryCount(prev => prev + 1);
 
-    const startUpgrade = async (isRetry = false) => {
-      if (isRetry) {
-        setRetrying(true);
-        setRetryCount(prev => prev + 1);
+      setPhases(prev => prev.map(phase => ({
+        ...phase,
+        status: 'pending',
+        progress: 0,
+        logs: []
+      })));
 
-        // Reset phases to pending
-        setPhases(prev => prev.map(phase => ({
-          ...phase,
-          status: 'pending',
-          progress: 0,
-          logs: []
-        })));
+      setAllLogs([]);
+      setErrorMessage('');
+      setUpgradeStatus('running');
+    }
 
-        setAllLogs([]);
-        setErrorMessage('');
-        setUpgradeStatus('running');
-      }
     const { sessionId, formData } = upgradeConfig;
-
-    // Create new session ID for retry
-    const currentSessionId = isRetry ?
-      `${sessionId}_retry${retryCount}` :
-      sessionId;
+    const currentSessionId = isRetry ? `${sessionId}_retry${retryCount}` : sessionId;
 
     const eventSource = new EventSource(`http://localhost:4000/api/upgrade-stream/${currentSessionId}`);
     eventSourceRef.current = eventSource;
@@ -125,7 +108,6 @@ const UpgradeProgress = ({ upgradeConfig, onBack, onComplete }) => {
           eventSource.close();
           setUpgradeStatus(data.success ? 'completed' : 'failed');
           setEndTime(new Date());
-          setDuration(data.duration);
           setRetrying(false);
           if (!data.success) {
             setErrorMessage(data.error || 'Upgrade failed');
@@ -147,13 +129,11 @@ const UpgradeProgress = ({ upgradeConfig, onBack, onComplete }) => {
       setCanRetry(retryCount < maxRetries);
     };
 
-    try {
-      // Update formData with new session ID if retry
-      if (isRetry) {
-        const config = JSON.parse(formData.get('config'));
-        config.sessionId = currentSessionId;
-        formData.set('config', JSON.stringify(config));
-      }
+    if (isRetry) {
+      const config = JSON.parse(formData.get('config'));
+      config.sessionId = currentSessionId;
+      formData.set('config', JSON.stringify(config));
+    }
 
     try {
       const response = await fetch('http://localhost:4000/api/upgrade', {
@@ -298,194 +278,36 @@ const UpgradeProgress = ({ upgradeConfig, onBack, onComplete }) => {
     }
   };
 
-// REPLACE generatePDFReport function in UpgradeProgress.tsx (around line 120) with:
+  const generatePDFReport = () => {
+    alert('PDF generation would require jsPDF library. For demo purposes, this creates a text report instead.');
 
-const generatePDFReport = () => {
-  try {
-    const doc = new jsPDF();
-    let yPos = 20;
+    const reportText = `
+${tool.name} Upgrade Report
+Generated: ${new Date().toLocaleString()}
+Status: ${upgradeStatus.toUpperCase()}
 
-    // Header with logo/icon
-    doc.setFillColor(59, 130, 246);
-    doc.rect(0, 0, 210, 30, 'F');
-    doc.setTextColor(255, 255, 255);
-    doc.setFontSize(24);
-    doc.text(`${tool.name} Upgrade Report`, 20, 20);
-    
-    // Reset color
-    doc.setTextColor(0, 0, 0);
-    yPos = 40;
+Start Time: ${startTime.toLocaleString()}
+${endTime ? `End Time: ${endTime.toLocaleString()}` : ''}
 
-    // Executive Summary Box
-    doc.setFillColor(240, 240, 240);
-    doc.roundedRect(15, yPos, 180, 50, 3, 3, 'F');
-    doc.setFontSize(14);
-    doc.setFont(undefined, 'bold');
-    doc.text('Executive Summary', 20, yPos + 10);
-    
-    doc.setFontSize(10);
-    doc.setFont(undefined, 'normal');
-    doc.text(`Start Time: ${startTime.toLocaleString()}`, 20, yPos + 20);
-    if (endTime) {
-      doc.text(`End Time: ${endTime.toLocaleString()}`, 20, yPos + 28);
-      doc.text(`Total Duration: ${Math.round((endTime - startTime) / 1000 / 60)} minutes`, 20, yPos + 36);
-    }
-    
-    // Status badge
-    const statusColor = upgradeStatus === 'completed' ? [34, 197, 94] : 
-                       upgradeStatus === 'failed' ? [239, 68, 68] : [59, 130, 246];
-    doc.setFillColor(...statusColor);
-    doc.roundedRect(140, yPos + 18, 40, 8, 2, 2, 'F');
-    doc.setTextColor(255, 255, 255);
-    doc.setFontSize(9);
-    doc.text(upgradeStatus.toUpperCase(), 145, yPos + 24);
-    doc.setTextColor(0, 0, 0);
-    
-    yPos += 60;
+Configuration:
+- Existing Path: ${upgradeConfig.existingPath}
+- Archive: ${upgradeConfig.newToolZip?.name || 'N/A'}
+- Backup Path: ${upgradeConfig.backupPath}
 
-    // Configuration Details
-    doc.setFontSize(14);
-    doc.setFont(undefined, 'bold');
-    doc.text('Configuration Details', 20, yPos);
-    yPos += 10;
-    
-    doc.setFontSize(10);
-    doc.setFont(undefined, 'normal');
-    const configDetails = [
-      ['Existing Path:', upgradeConfig.existingPath],
-      ['Archive:', upgradeConfig.newToolZip?.name || 'N/A'],
-      ['Backup Path:', upgradeConfig.backupPath],
-      ['Preserve Config:', upgradeConfig.preserveConfig ? 'Yes' : 'No'],
-      ['Preserve Data:', upgradeConfig.preserveData ? 'Yes' : 'No'],
-      ['Auto Start:', upgradeConfig.autoStart ? 'Yes' : 'No']
-    ];
-    
-    if (upgradeConfig.certFolderPath) {
-      configDetails.push(['Certificate Path:', upgradeConfig.certFolderPath]);
-    }
-    
-    autoTable(doc, {
-      body: configDetails,
-      startY: yPos,
-      theme: 'plain',
-      styles: { fontSize: 9, cellPadding: 3 },
-      columnStyles: {
-        0: { fontStyle: 'bold', cellWidth: 50 },
-        1: { cellWidth: 130 }
-      }
-    });
-    
-    yPos = doc.lastAutoTable.finalY + 15;
+Phases:
+${phases.map(p => `${p.title}: ${p.status} (${p.progress}%)`).join('\n')}
 
-    // Phase Summary with visual indicators
-    doc.setFontSize(14);
-    doc.setFont(undefined, 'bold');
-    doc.text('Upgrade Phases', 20, yPos);
-    yPos += 10;
-    
-    const phaseData = phases.map(phase => {
-      const statusIcon = phase.status === 'completed' ? '✓' :
-                        phase.status === 'running' ? '⟳' :
-                        phase.status === 'error' ? '✗' : '○';
-      return [
-        statusIcon,
-        phase.title,
-        phase.status.toUpperCase(),
-        `${phase.progress}%`,
-        `${phase.logs.length} logs`
-      ];
-    });
+Logs:
+${allLogs.join('\n')}
+    `;
 
-    autoTable(doc, {
-      head: [['', 'Phase', 'Status', 'Progress', 'Logs']],
-      body: phaseData,
-      startY: yPos,
-      theme: 'striped',
-      headStyles: { 
-        fillColor: [59, 130, 246],
-        fontSize: 10,
-        fontStyle: 'bold'
-      },
-      styles: { fontSize: 9 },
-      columnStyles: {
-        0: { cellWidth: 10, halign: 'center' },
-        1: { cellWidth: 70 },
-        2: { cellWidth: 30 },
-        3: { cellWidth: 25 },
-        4: { cellWidth: 25 }
-      },
-      didParseCell: function(data) {
-        if (data.section === 'body' && data.column.index === 0) {
-          const status = phases[data.row.index].status;
-          data.cell.styles.textColor = status === 'completed' ? [34, 197, 94] :
-                                      status === 'error' ? [239, 68, 68] :
-                                      status === 'running' ? [59, 130, 246] : [156, 163, 175];
-        }
-      }
-    });
-
-    // Detailed Logs Section
-    doc.addPage();
-    yPos = 20;
-    
-    doc.setFontSize(16);
-    doc.setFont(undefined, 'bold');
-    doc.text('Detailed Execution Logs', 20, yPos);
-    yPos += 15;
-
-    doc.setFontSize(8);
-    doc.setFont('courier', 'normal');
-    
-    allLogs.forEach((log, index) => {
-      if (yPos > 280) {
-        doc.addPage();
-        yPos = 20;
-      }
-
-      // Color code log lines
-      let logColor = [0, 0, 0]; // default black
-      if (log.includes('[ERROR]')) logColor = [239, 68, 68];
-      else if (log.includes('[WARNING]')) logColor = [234, 179, 8];
-      else if (log.includes('✓')) logColor = [34, 197, 94];
-      else if (log.includes('[INFO]')) logColor = [59, 130, 246];
-      
-      doc.setTextColor(...logColor);
-      
-      const cleanLog = log.replace(/\[.*?\]/g, '').trim();
-      const lines = doc.splitTextToSize(cleanLog, 170);
-
-      lines.forEach(line => {
-        if (yPos > 280) {
-          doc.addPage();
-          yPos = 20;
-        }
-        doc.text(line, 20, yPos);
-        yPos += 4;
-      });
-    });
-
-    // Footer on all pages
-    const pageCount = doc.internal.getNumberOfPages();
-    doc.setTextColor(128, 128, 128);
-    doc.setFontSize(8);
-    for (let i = 1; i <= pageCount; i++) {
-      doc.setPage(i);
-      doc.text(
-        `Page ${i} of ${pageCount} | Generated: ${new Date().toLocaleString()}`,
-        105,
-        290,
-        { align: 'center' }
-      );
-    }
-
-    const fileName = `${tool.name.replace(/\s+/g, '_')}_Upgrade_Report_${new Date().toISOString().split('T')[0]}_${upgradeStatus}.pdf`;
-    doc.save(fileName);
-
-  } catch (error) {
-    console.error('Error generating PDF:', error);
-    alert('Failed to generate PDF report. Check console for details.');
-  }
-};
+    const blob = new Blob([reportText], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${tool.name.replace(/\s+/g, '_')}_Upgrade_Report.txt`;
+    a.click();
+  };
 
   const completedPhases = phases.filter(p => p.status === 'completed').length;
   const totalPhases = phases.length;
@@ -505,7 +327,6 @@ const generatePDFReport = () => {
               Back to Dashboard
             </button>
 
-
             {upgradeStatus !== 'running' && (
               <button
                 onClick={generatePDFReport}
@@ -517,85 +338,82 @@ const generatePDFReport = () => {
             )}
           </div>
 
-                  {/* Enhanced Error Display with Retry */}
-                  {upgradeStatus === 'failed' && (
-                    <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
-                      <div className="flex items-start">
-                        <XCircle className="w-5 h-5 text-red-500 mr-2 mt-0.5 flex-shrink-0" />
-                        <div className="flex-1">
-                          <h3 className="font-medium text-red-800">Upgrade Failed</h3>
-                          <p className="text-sm text-red-700 mb-2">
-                            The upgrade process encountered an error.
-                            {retryCount > 0 && ` (Attempt ${retryCount + 1}/${maxRetries + 1})`}
-                          </p>
+          {upgradeStatus === 'failed' && (
+            <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
+              <div className="flex items-start">
+                <XCircle className="w-5 h-5 text-red-500 mr-2 mt-0.5 flex-shrink-0" />
+                <div className="flex-1">
+                  <h3 className="font-medium text-red-800">Upgrade Failed</h3>
+                  <p className="text-sm text-red-700 mb-2">
+                    The upgrade process encountered an error.
+                    {retryCount > 0 && ` (Attempt ${retryCount + 1}/${maxRetries + 1})`}
+                  </p>
 
-                          {errorMessage && (
-                            <div className="text-sm mt-2 space-y-2">
-                              {errorMessage.split('\n\n').map((msg, idx) => (
-                                <div key={idx} className={`p-2 rounded font-mono text-xs ${
-                                  msg.includes('ROLLBACK SUCCESSFUL')
-                                    ? 'bg-green-100 text-green-800 border border-green-300'
-                                    : msg.includes('ROLLBACK')
-                                    ? 'bg-yellow-100 text-yellow-800 border border-yellow-300'
-                                    : 'bg-red-100 text-red-700'
-                                }`}>
-                                  {msg}
-                                </div>
-                              ))}
-                            </div>
-                          )}
-
-                          {/* Retry Button */}
-                          {canRetry && (
-                            <div className="mt-4 flex items-center space-x-3">
-                              <button
-                                onClick={handleRetry}
-                                disabled={retrying}
-                                className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-                              >
-                                <RefreshCw className={`w-4 h-4 mr-2 ${retrying ? 'animate-spin' : ''}`} />
-                                {retrying ? 'Retrying...' : `Retry Upgrade (${maxRetries - retryCount} attempts left)`}
-                              </button>
-
-                              <span className="text-xs text-red-600">
-                                Common issues: Services not stopped, file locks, antivirus interference
-                              </span>
-                            </div>
-                          )}
-
-                          {!canRetry && retryCount >= maxRetries && (
-                            <div className="mt-4 p-3 bg-yellow-50 border border-yellow-300 rounded">
-                              <p className="text-sm text-yellow-800 font-medium">
-                                ⚠️ Maximum retry attempts reached
-                              </p>
-                              <p className="text-xs text-yellow-700 mt-1">
-                                Please manually verify:
-                              </p>
-                              <ul className="text-xs text-yellow-700 list-disc list-inside mt-1">
-                                <li>All {tool.name} services are completely stopped</li>
-                                <li>No files are locked by other processes</li>
-                                <li>Antivirus/security software is not blocking operations</li>
-                                <li>You have administrator privileges</li>
-                              </ul>
-                            </div>
-                          )}
-
-                          {/* Diagnostic Information */}
-                          <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded">
-                            <h4 className="text-sm font-medium text-blue-900 mb-1">
-                              Diagnostic Information
-                            </h4>
-                            <div className="text-xs text-blue-800 space-y-1">
-                              <div>Session ID: <code className="bg-blue-100 px-1 rounded">{upgradeConfig.sessionId}</code></div>
-                              <div>Retry Count: {retryCount}/{maxRetries}</div>
-                              <div>Tool: {tool.name}</div>
-                              <div>Path: {upgradeConfig.existingPath}</div>
-                            </div>
-                          </div>
+                  {errorMessage && (
+                    <div className="text-sm mt-2 space-y-2">
+                      {errorMessage.split('\n\n').map((msg, idx) => (
+                        <div key={idx} className={`p-2 rounded font-mono text-xs ${
+                          msg.includes('ROLLBACK SUCCESSFUL')
+                            ? 'bg-green-100 text-green-800 border border-green-300'
+                            : msg.includes('ROLLBACK')
+                            ? 'bg-yellow-100 text-yellow-800 border border-yellow-300'
+                            : 'bg-red-100 text-red-700'
+                        }`}>
+                          {msg}
                         </div>
-                      </div>
+                      ))}
                     </div>
                   )}
+
+                  {canRetry && (
+                    <div className="mt-4 flex items-center space-x-3">
+                      <button
+                        onClick={handleRetry}
+                        disabled={retrying}
+                        className="flex items-center px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                      >
+                        <RefreshCw className={`w-4 h-4 mr-2 ${retrying ? 'animate-spin' : ''}`} />
+                        {retrying ? 'Retrying...' : `Retry Upgrade (${maxRetries - retryCount} attempts left)`}
+                      </button>
+
+                      <span className="text-xs text-red-600">
+                        Common issues: Services not stopped, file locks, antivirus interference
+                      </span>
+                    </div>
+                  )}
+
+                  {!canRetry && retryCount >= maxRetries && (
+                    <div className="mt-4 p-3 bg-yellow-50 border border-yellow-300 rounded">
+                      <p className="text-sm text-yellow-800 font-medium">
+                        ⚠️ Maximum retry attempts reached
+                      </p>
+                      <p className="text-xs text-yellow-700 mt-1">
+                        Please manually verify:
+                      </p>
+                      <ul className="text-xs text-yellow-700 list-disc list-inside mt-1">
+                        <li>All {tool.name} services are completely stopped</li>
+                        <li>No files are locked by other processes</li>
+                        <li>Antivirus/security software is not blocking operations</li>
+                        <li>You have administrator privileges</li>
+                      </ul>
+                    </div>
+                  )}
+
+                  <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded">
+                    <h4 className="text-sm font-medium text-blue-900 mb-1">
+                      Diagnostic Information
+                    </h4>
+                    <div className="text-xs text-blue-800 space-y-1">
+                      <div>Session ID: <code className="bg-blue-100 px-1 rounded">{upgradeConfig.sessionId}</code></div>
+                      <div>Retry Count: {retryCount}/{maxRetries}</div>
+                      <div>Tool: {tool.name}</div>
+                      <div>Path: {upgradeConfig.existingPath}</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="flex items-center mb-4">
             <div className="text-4xl mr-4">{tool.icon}</div>
@@ -637,51 +455,10 @@ const generatePDFReport = () => {
               </div>
             </div>
           )}
-
-          {upgradeStatus === 'failed' && (
-            <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-4">
-              <div className="flex items-start">
-                <XCircle className="w-5 h-5 text-red-500 mr-2 mt-0.5" />
-                <div className="flex-1">
-                  <h3 className="font-medium text-red-800">Upgrade Failed</h3>
-                  <p className="text-sm text-red-700 mb-2">
-                    The upgrade process encountered an error. A rollback was performed to restore your system.
-                  </p>
-                  {errorMessage && (
-                    <div className="text-sm mt-2 space-y-2">
-                      {errorMessage.split('\n\n').map((msg, idx) => (
-                        <div key={idx} className={`p-2 rounded font-mono ${
-                          msg.includes('ROLLBACK SUCCESSFUL')
-                            ? 'bg-green-100 text-green-800 border border-green-300'
-                            : msg.includes('ROLLBACK')
-                            ? 'bg-yellow-100 text-yellow-800 border border-yellow-300'
-                            : 'bg-red-100 text-red-700'
-                        }`}>
-                          {msg}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  <div className="mt-3 p-3 bg-blue-50 border border-blue-200 rounded">
-                    <h4 className="text-sm font-medium text-blue-900 mb-1">What happened?</h4>
-                    <p className="text-xs text-blue-800">
-                      The upgrade failed during configuration preservation. Common causes include:
-                    </p>
-                    <ul className="text-xs text-blue-800 list-disc list-inside mt-1 space-y-0.5">
-                      <li>Files locked by running services (Apache/Tomcat must be stopped)</li>
-                      <li>Insufficient permissions to modify files</li>
-                      <li>Antivirus blocking file operations</li>
-                    </ul>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
         </div>
 
         <div className="space-y-4">
-          {phases.map((phase, index) => (
+          {phases.map((phase) => (
             <div key={phase.id} className="bg-white rounded-lg shadow-sm border border-gray-200">
               <div
                 className="p-4 cursor-pointer hover:bg-gray-50 transition-colors"
