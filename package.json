@@ -1,9 +1,9 @@
 {
-  "name": "vite-react-typescript-starter",
+  "name": "tools-upgrade",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
-  "main": "electron.js",
+  "main": "electron.cjs",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -50,15 +50,18 @@
   },
   "build": {
     "appId": "com.yourname.viteapp",
-    "productName": "ViteReactApp",
+    "productName": "Tools Upgrade",
     "directories": {
       "buildResources": "resources",
       "output": "release"
     },
     "files": [
       "dist/**/*",
-      "electron.js",
-      "package.json"
+      "electron.cjs",
+      "package.json",
+      "server.cjs",
+      "configMerger.cjs",
+      "node_modules/**"
     ],
     "win": {
       "target": "nsis",
